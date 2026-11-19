@@ -12,8 +12,12 @@ and `.fmp12` files, browsing tables, and viewing records page by page.
 Click a column heading to sort records. Search starts after you enter at least
 3 characters. When a database contains more than 10 tables, the app uses a
 table selector. The app keeps a local cache so it does not need to reread the
-source file each time. The **Structure** window lists decoded tables and fields
-and shows possible links separately from verified relationships.
+source file each time. The **Structure** window lists decoded table and field
+metadata, flags field-name relationship candidates such as `id_convegni`, and
+shows a proposed normalized model for the Convegni/Aziende/Persone findings.
+Use **Export JSON report…** to save the metadata and analysis without record
+values. Prior observations from the live FileMaker UI are labeled separately
+from facts decoded from the selected file.
 
 ## Supported formats and limitations
 
@@ -25,9 +29,12 @@ and shows possible links separately from verified relationships.
 - The reader extracts tables, field names, and tabular values. It also reads
   field types from the documented metadata in `.fp3` and `.fp5`; the guide does
   not describe enough metadata to recover field types in `.fp7` and `.fmp12`.
-- The guide does not document FileMaker's relationship graph. The **Possible
-  links** tab suggests matches based on field names; these are unverified and
-  do not replace the relationship graph in FileMaker.
+- The guide does not document FileMaker's relationship graph. The structure
+  report suggests links from field names and possible junction tables; these
+  are unverified and do not replace the relationship graph in FileMaker. Names
+  such as `id_convegni` are reported only when actually found in decoded
+  metadata; the proposed model's key names are conventions, not claims about
+  the source file.
 - Layouts, scripts, calculations, account privileges, and external container
   contents are not reconstructed. Reading the raw file does not enforce
   FileMaker account privileges.

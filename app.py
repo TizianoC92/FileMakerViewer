@@ -58,6 +58,21 @@ if not LOGGER.handlers:
 DEFAULT_DATABASES = Path.home() / "Documents"
 SUPPORTED_EXTENSIONS = {".fp3", ".fp5", ".fp7", ".fmp12"}
 
+LIVE_UI_FINDINGS = (
+    "The inspected event layouts showed separate company and person participant totals.",
+    "The company portal showed company, macro-area, sector, and city details.",
+    "The person portal showed attendee identity, role/function, employer, city, and attendance checkboxes for event dates.",
+    "Company records and person overviews showed event totals, supporting reusable links across events.",
+    "Some company display names repeated within an event portal. Preserve each relationship row; do not deduplicate by display name.",
+    "The live account could not open FileMaker's database/field definition tools, so physical key names such as id_convegni remain unconfirmed.",
+)
+
+ENTITY_TABLE_ALIASES = {
+    "events": {"convegni", "convegno", "eventi", "evento", "events", "event"},
+    "companies": {"aziende", "azienda", "companies", "company"},
+    "people": {"persone", "persona", "people", "person", "contatti", "contatto"},
+}
+
 
 class FileMakerViewer:
     def __init__(self, root: tk.Tk) -> None:
@@ -1231,57 +1246,346 @@ class FileMakerViewer:
         decomposed = unicodedata.normalize("NFKD", value).casefold()
         return "".join(character for character in decomposed if character.isalnum())
 
-    def _relationship_suggestions(self) -> list[tuple[str, str, str, str]]:
-        suggestions: set[tuple[str, str, str, str]] = set()
+    @classmethod
+    def _table_aliases(cls, name: str) -> set[str]:
+        normalized = cls._normalized_identifier(name)
+        aliases = {normalized}
+        for role_aliases in ENTITY_TABLE_ALIASES.values():
+            normalized_role_aliases = {
+                cls._normalized_identifier(alias) for alias in role_aliases
+            }
+            if normalized in normalized_role_aliases:
+                aliases.update(normalized_role_aliases)
+        for suffix in ("s", "i", "e"):
+            if len(normalized) > 4 and normalized.endswith(suffix):
+                aliases.add(normalized[:-1])
+        return aliases
 
-        def table_names(name: str) -> set[str]:
-            normalized = self._normalized_identifier(name)
-            variants = {normalized}
-            for suffix in ("s", "i", "e"):
-                if len(normalized) > 4 and normalized.endswith(suffix):
-                    variants.add(normalized[:-1])
-            return variants
+    @classmethod
+    def _field_reference_aliases(cls, field_name: str) -> set[str]:
+        """Return table-name tokens explicitly embedded in an ID-like field name."""
+        normalized = cls._normalized_identifier(field_name)
+        queue = [normalized]
+        visited = {normalized}
+        references: set[str] = set()
+        prefixes = ("foreignkey", "reference", "ref", "fk", "id")
+        suffixes = ("foreignkey", "reference", "ref", "fk", "key", "id")
+
+        while queue:
+            candidate = queue.pop()
+            for prefix in prefixes:
+                if candidate.startswith(prefix) and len(candidate) > len(prefix):
+                    remainder = candidate[len(prefix):]
+                    references.add(remainder)
+                    if remainder not in visited:
+                        visited.add(remainder)
+                        queue.append(remainder)
+            for suffix in suffixes:
+                if candidate.endswith(suffix) and len(candidate) > len(suffix):
+                    remainder = candidate[:-len(suffix)]
+                    references.add(remainder)
+                    if remainder not in visited:
+                        visited.add(remainder)
+                        queue.append(remainder)
+
+        return {
+            reference
+            for reference in references
+            if reference not in {"id", "fk", "ref", "key", "foreignkey"}
+        }
+
+    def _candidate_key_field(self, source_field: FieldInfo, target: TableInfo) -> str:
+        source_name = self._normalized_identifier(source_field.name)
+        exact_matches = [
+            field
+            for field in target.fields
+            if self._normalized_identifier(field.name) == source_name
+        ]
+        if len(exact_matches) == 1:
+            return f"{exact_matches[0].name} (same name; key role unverified)"
+        if len(exact_matches) > 1:
+            names = ", ".join(field.name for field in exact_matches)
+            return f"Ambiguous: {names}"
+
+        generic_ids = [
+            field
+            for field in target.fields
+            if self._normalized_identifier(field.name) == "id"
+        ]
+        if len(generic_ids) == 1:
+            return f"{generic_ids[0].name} (conventional; key role unverified)"
+
+        target_aliases = self._table_aliases(target.name)
+        table_specific_keys = [
+            field
+            for field in target.fields
+            if self._normalized_identifier(field.name)
+            in {
+                f"id{alias}" for alias in target_aliases
+            } | {
+                f"{alias}id" for alias in target_aliases
+            }
+        ]
+        if len(table_specific_keys) == 1:
+            return f"{table_specific_keys[0].name} (key role unverified)"
+        if len(generic_ids) > 1 or len(table_specific_keys) > 1:
+            names = [field.name for field in generic_ids + table_specific_keys]
+            return f"Ambiguous: {', '.join(dict.fromkeys(names))}"
+        return "Not identified"
+
+    def _relationship_suggestions(self) -> list[dict[str, str]]:
+        """Find field-name candidates without claiming FileMaker links are verified."""
+        candidates: list[dict[str, str]] = []
 
         for source in self.tables:
             for source_field in source.fields:
-                normalized_field = self._normalized_identifier(source_field.name)
-                tokens: set[str] = set()
-                if normalized_field.startswith("id") and len(normalized_field) > 2:
-                    tokens.add(normalized_field[2:])
-                if normalized_field.endswith("id") and len(normalized_field) > 2:
-                    tokens.add(normalized_field[:-2])
-
+                reference_aliases = self._field_reference_aliases(source_field.name)
+                if not reference_aliases:
+                    continue
                 for target in self.tables:
                     if target.index == source.index:
                         continue
-                    target_aliases = table_names(target.name)
-                    target_key_fields = [
-                        field
-                        for field in target.fields
-                        if self._normalized_identifier(field.name) == "id"
-                        or self._normalized_identifier(field.name).startswith("id")
-                        or self._normalized_identifier(field.name).endswith("id")
-                    ]
-                    if not target_key_fields:
+                    matching_aliases = reference_aliases & self._table_aliases(target.name)
+                    if not matching_aliases:
                         continue
-
-                    matches_table_name = bool(tokens & target_aliases)
-                    matching_shared_key = any(
-                        normalized_field == self._normalized_identifier(field.name)
-                        and normalized_field != "id"
-                        for field in target.fields
+                    matching_name = sorted(matching_aliases, key=len, reverse=True)[0]
+                    candidates.append(
+                        {
+                            "source_table": source.name,
+                            "source_field": source_field.name,
+                            "target_table": target.name,
+                            "target_key": self._candidate_key_field(source_field, target),
+                            "evidence": f"Field name contains table-name token '{matching_name}'.",
+                        }
                     )
-                    if matches_table_name or matching_shared_key:
-                        target_field = target_key_fields[0]
-                        suggestions.add(
-                            (
-                                source.name,
-                                source_field.name,
-                                target.name,
-                                target_field.name,
-                            )
-                        )
-        return sorted(suggestions, key=lambda edge: tuple(part.casefold() for part in edge))
+
+        targets_by_source: dict[str, set[str]] = {}
+        for candidate in candidates:
+            targets_by_source.setdefault(candidate["source_table"], set()).add(
+                candidate["target_table"]
+            )
+        for candidate in candidates:
+            target_count = len(targets_by_source[candidate["source_table"]])
+            candidate["table_role"] = (
+                "Possible junction table"
+                if target_count >= 2
+                else "Possible foreign key"
+            )
+            candidate["confidence"] = "Name match; unverified"
+
+        return sorted(
+            candidates,
+            key=lambda item: tuple(
+                item[key].casefold()
+                for key in ("source_table", "source_field", "target_table")
+            ),
+        )
+
+    def _recognized_entity_tables(self) -> dict[str, list[TableInfo]]:
+        recognized: dict[str, list[TableInfo]] = {}
+        for role, aliases in ENTITY_TABLE_ALIASES.items():
+            normalized_aliases = {
+                self._normalized_identifier(alias) for alias in aliases
+            }
+            matches = [
+                table
+                for table in self.tables
+                if self._table_aliases(table.name) & normalized_aliases
+            ]
+            recognized[role] = matches
+        return recognized
+
+    def _structure_report(self) -> dict[str, object]:
+        recognized = self._recognized_entity_tables()
+        candidates = self._relationship_suggestions()
+        source_path = Path(self.path_var.get().strip().strip('"'))
+        recognized_tables = {
+            role: [table.name for table in tables]
+            for role, tables in recognized.items()
+        }
+        junction_tables = sorted(
+            {
+                item["source_table"]
+                for item in candidates
+                if item["table_role"] == "Possible junction table"
+            },
+            key=str.casefold,
+        )
+
+        return {
+            "report_version": 1,
+            "source_file": source_path.name,
+            "source_format": self.source_format or source_path.suffix.lstrip(".").upper(),
+            "scope": {
+                "metadata_read": ["table names", "field names", "field types when decoded", "record counts"],
+                "record_values_included": False,
+                "relationship_graph_decoded": False,
+                "relationship_note": (
+                    "The report analyzes decoded names. Candidate links are not proof "
+                    "of relationships configured in FileMaker."
+                ),
+            },
+            "tables": [
+                {
+                    "index": table.index,
+                    "name": table.name,
+                    "record_count": table.record_count,
+                    "fields": [
+                        {
+                            "index": field_info.index,
+                            "name": field_info.name,
+                            "type": field_info.type_name,
+                        }
+                        for field_info in table.fields
+                    ],
+                }
+                for table in self.tables
+            ],
+            "relationship_candidates": candidates,
+            "possible_junction_tables": junction_tables,
+            "recognized_entity_tables": recognized_tables,
+            "live_filemaker_ui_observations": {
+                "scope": "Manual observations from the previously inspected live database; not extracted from the selected file.",
+                "findings": list(LIVE_UI_FINDINGS),
+            },
+            "proposed_logical_model": {
+                "tables": [
+                    {
+                        "name": "Convegni",
+                        "suggested_fields": ["id_convegni (PK)", "denominazione", "data", "attivo", "gruppo"],
+                    },
+                    {
+                        "name": "Aziende",
+                        "suggested_fields": ["id_aziende (PK)", "ragione_sociale", "macroarea", "settore", "citta"],
+                    },
+                    {
+                        "name": "Persone",
+                        "suggested_fields": ["id_persone (PK)", "titolo", "cognome", "nome", "area_funzione", "id_aziende (FK candidato)"],
+                    },
+                    {
+                        "name": "ConvegnoAziende",
+                        "suggested_fields": ["id_convegno_azienda (PK)", "id_convegni (FK candidato)", "id_aziende (FK candidato)"],
+                    },
+                    {
+                        "name": "ConvegnoPersone",
+                        "suggested_fields": ["id_convegno_persona (PK)", "id_convegni (FK candidato)", "id_persone (FK candidato)"],
+                    },
+                    {
+                        "name": "PresenzeGiornaliere",
+                        "suggested_fields": ["id_convegno_persona (FK candidato)", "data", "presente"],
+                    },
+                ],
+                "relationships": [
+                    "Convegni 1:N ConvegnoAziende N:1 Aziende",
+                    "Convegni 1:N ConvegnoPersone N:1 Persone",
+                    "Aziende 1:N Persone (relationship to verify)",
+                    "ConvegnoPersone 1:N PresenzeGiornaliere",
+                ],
+                "field_names_are_proposals": True,
+            },
+        }
+
+    def _structure_model_text(self, report: dict[str, object]) -> str:
+        recognized = report["recognized_entity_tables"]
+        candidates = report["relationship_candidates"]
+        lines = [
+            "METADATA-BASED RELATIONSHIP ANALYSIS",
+            "Table and field names below come from the selected file's decoded metadata.",
+            "The FileMaker relationship graph itself is not decoded; name matches are candidates only.",
+            "",
+            "TABLES RECOGNIZED BY NAME",
+        ]
+        role_labels = {
+            "events": "Convegni / events",
+            "companies": "Aziende / companies",
+            "people": "Persone / people",
+        }
+        for role, label in role_labels.items():
+            table_names = recognized.get(role, [])
+            if table_names:
+                lines.append(f"  {label}: {', '.join(table_names)}")
+            else:
+                lines.append(f"  {label}: no matching table name found")
+
+        lines.extend(["", "FIELD-NAME LINK CANDIDATES"])
+        if candidates:
+            for candidate in candidates:
+                lines.append(
+                    "  {source_table}.{source_field} -> {target_table}.{target_key} "
+                    "[{table_role}; {confidence}]".format(**candidate)
+                )
+        else:
+            lines.append("  No explicit ID-to-table name matches found.")
+            lines.append("  This does not mean that the FileMaker file has no relationships.")
+
+        lines.extend(
+            [
+                "",
+                "PROPOSED NORMALIZED EXPORT MODEL",
+                "  CONVEGNI(id_convegni PK, denominazione, data, attivo, gruppo)",
+                "  AZIENDE(id_aziende PK, ragione_sociale, macroarea, settore, citta)",
+                "  PERSONE(id_persone PK, titolo, cognome, nome, area_funzione, id_aziende?)",
+                "  CONVEGNO_AZIENDE(id_convegno_azienda PK, id_convegni FK?, id_aziende FK?)",
+                "  CONVEGNO_PERSONE(id_convegno_persona PK, id_convegni FK?, id_persone FK?)",
+                "  PRESENZE_GIORNALIERE(id_convegno_persona FK?, data, presente)",
+                "",
+                "The ? marks proposed names/links, not fields confirmed in the source file.",
+                "The daily attendance table is a normalized export design for the date checkboxes observed in FileMaker.",
+                "",
+                "PRIOR LIVE FILEMAKER UI EVIDENCE (not read from this selected file)",
+            ]
+        )
+        lines.extend(["", *[f"  • {finding}" for finding in LIVE_UI_FINDINGS]])
+        lines.extend(
+            [
+                "",
+                "Use stable FileMaker IDs to preserve repeated portal rows; display names are not safe keys.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def export_structure_report(self, parent: tk.Misc | None = None) -> None:
+        if not self.tables:
+            messagebox.showinfo(
+                "Structure report",
+                "Open a FileMaker database first.",
+                parent=parent or self.root,
+            )
+            return
+        source_path = Path(self.path_var.get().strip().strip('"'))
+        output = filedialog.asksaveasfilename(
+            parent=parent or self.root,
+            title="Save structure report",
+            initialfile=f"{source_path.stem or 'filemaker'}_structure.json",
+            defaultextension=".json",
+            filetypes=(("JSON structure report", "*.json"),),
+        )
+        if not output:
+            return
+        try:
+            report = self._structure_report()
+            Path(output).write_text(
+                json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            LOGGER.exception("Could not save the structure report.")
+            messagebox.showerror(
+                "Structure report",
+                f"Could not save the report: {exc}",
+                parent=parent or self.root,
+            )
+            return
+        LOGGER.info(
+            "Structure report exported: %s tables, %s relationship candidates.",
+            len(self.tables),
+            len(report["relationship_candidates"]),
+        )
+        messagebox.showinfo(
+            "Structure report",
+            "The metadata-only structure report was saved. Record values were not included.",
+            parent=parent or self.root,
+        )
 
     def show_structure(self) -> None:
         if not self.tables:
@@ -1295,14 +1599,15 @@ class FileMakerViewer:
         window = tk.Toplevel(self.root)
         window.title(f"Structure — {Path(self.path_var.get()).name}")
         window.transient(self.root)
-        window.geometry("900x560")
-        window.minsize(650, 380)
+        window.geometry("1180x700")
+        window.minsize(760, 500)
         window.columnconfigure(0, weight=1)
         window.rowconfigure(1, weight=1)
+        report = self._structure_report()
         ttk.Label(
             window,
             text=f"Format: {self.source_format or 'FileMaker'} — "
-            f"{len(self.tables)} tables",
+            f"{len(self.tables)} tables — metadata only; relationships are inferred, not verified",
             padding=(12, 10, 12, 4),
         ).grid(row=0, column=0, sticky="w")
 
@@ -1313,17 +1618,19 @@ class FileMakerViewer:
         schema_frame.rowconfigure(0, weight=1)
         schema_tree = ttk.Treeview(
             schema_frame,
-            columns=("index", "type", "field_count"),
+            columns=("index", "type", "field_count", "records"),
             show="tree headings",
         )
         schema_tree.heading("#0", text="Table / field")
         schema_tree.heading("index", text="Index")
         schema_tree.heading("type", text="Field type")
         schema_tree.heading("field_count", text="Fields")
+        schema_tree.heading("records", text="Records")
         schema_tree.column("#0", width=390, minwidth=220)
         schema_tree.column("index", width=90, anchor="e")
         schema_tree.column("type", width=150)
         schema_tree.column("field_count", width=90, anchor="e")
+        schema_tree.column("records", width=110, anchor="e")
         schema_scroll = ttk.Scrollbar(
             schema_frame, orient="vertical", command=schema_tree.yview
         )
@@ -1335,7 +1642,7 @@ class FileMakerViewer:
                 "",
                 "end",
                 text=table.name,
-                values=(table.index, "Table", len(table.fields)),
+                values=(table.index, "Table", len(table.fields), f"{table.record_count:,}"),
                 open=True,
             )
             for field_info in table.fields:
@@ -1343,7 +1650,7 @@ class FileMakerViewer:
                     parent,
                     "end",
                     text=field_info.name,
-                    values=(field_info.index, field_info.type_name, ""),
+                    values=(field_info.index, field_info.type_name, "", ""),
                 )
         notebook.add(schema_frame, text="Tables and fields")
 
@@ -1353,45 +1660,101 @@ class FileMakerViewer:
         ttk.Label(
             relations_frame,
             text=(
-                "The fmptools guide does not decode FileMaker's relationship graph. "
-                "These links are guesses based on field names and should be verified "
-                "in the database opened with FileMaker."
+                "Candidate links are derived from decoded field names such as id_convegni. "
+                "A field-name match is evidence to inspect, not proof of a configured FileMaker relationship."
             ),
-            wraplength=820,
+            wraplength=1000,
             justify="left",
         ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
         relations_tree = ttk.Treeview(
             relations_frame,
-            columns=("source_table", "source_field", "related_table", "possible_key"),
+            columns=("source_table", "source_field", "related_table", "possible_key", "table_role", "evidence"),
             show="headings",
         )
         for column, heading in (
             ("source_table", "Source table"),
             ("source_field", "Source field"),
             ("related_table", "Related table"),
-            ("possible_key", "Possible key field"),
+            ("possible_key", "Target key candidate"),
+            ("table_role", "Possible role"),
+            ("evidence", "Metadata evidence"),
         ):
             relations_tree.heading(column, text=heading)
-            relations_tree.column(column, width=180, minwidth=120)
+            relations_tree.column(column, width=170, minwidth=110)
+        relations_tree.column("evidence", width=250, minwidth=180)
         relations_scroll = ttk.Scrollbar(
             relations_frame, orient="vertical", command=relations_tree.yview
         )
-        relations_tree.configure(yscrollcommand=relations_scroll.set)
+        relations_horizontal = ttk.Scrollbar(
+            relations_frame, orient="horizontal", command=relations_tree.xview
+        )
+        relations_tree.configure(
+            yscrollcommand=relations_scroll.set,
+            xscrollcommand=relations_horizontal.set,
+        )
         relations_tree.grid(row=1, column=0, sticky="nsew")
         relations_scroll.grid(row=1, column=1, sticky="ns")
-        suggestions = self._relationship_suggestions()
+        relations_horizontal.grid(row=2, column=0, sticky="ew")
+        suggestions = report["relationship_candidates"]
         for suggestion in suggestions:
-            relations_tree.insert("", "end", values=suggestion)
+            relations_tree.insert(
+                "",
+                "end",
+                values=(
+                    suggestion["source_table"],
+                    suggestion["source_field"],
+                    suggestion["target_table"],
+                    suggestion["target_key"],
+                    suggestion["table_role"],
+                    suggestion["evidence"],
+                ),
+            )
         if not suggestions:
             relations_tree.insert(
                 "",
                 "end",
-                values=("No links inferred from field names", "", "", ""),
+                values=("No ID-to-table matches found", "", "", "", "", ""),
             )
-        notebook.add(relations_frame, text="Possible links")
+        notebook.add(relations_frame, text="Relationship candidates")
 
-        ttk.Button(window, text="Close", command=window.destroy).grid(
-            row=2, column=0, sticky="e", padx=12, pady=(0, 12)
+        model_frame = ttk.Frame(notebook, padding=8)
+        model_frame.columnconfigure(0, weight=1)
+        model_frame.rowconfigure(1, weight=1)
+        ttk.Label(
+            model_frame,
+            text=(
+                "The proposed model keeps decoded metadata, name-based candidates, "
+                "and observations from the live FileMaker UI clearly separate."
+            ),
+            wraplength=1000,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        model_text = tk.Text(model_frame, wrap="word", padx=8, pady=8)
+        model_scroll = ttk.Scrollbar(
+            model_frame, orient="vertical", command=model_text.yview
+        )
+        model_text.configure(yscrollcommand=model_scroll.set)
+        model_text.grid(row=1, column=0, sticky="nsew")
+        model_scroll.grid(row=1, column=1, sticky="ns")
+        model_text.insert("1.0", self._structure_model_text(report))
+        model_text.configure(state="disabled")
+        notebook.add(model_frame, text="Model and findings")
+
+        footer = ttk.Frame(window, padding=(12, 0, 12, 12))
+        footer.grid(row=2, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        ttk.Label(
+            footer,
+            text="The JSON report contains metadata and analysis only; it excludes record values.",
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            footer,
+            text="Export JSON report…",
+            command=lambda: self.export_structure_report(window),
+        ).grid(row=0, column=1, padx=(8, 8))
+        ttk.Button(footer, text="Close", command=window.destroy).grid(
+            row=0, column=2, sticky="e"
         )
 
 
