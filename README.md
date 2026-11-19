@@ -1,60 +1,57 @@
 # FileMaker Viewer
 
-Applicazione Windows per aprire in sola lettura file FileMaker `.fp3`, `.fp5`,
-`.fp7` e `.fmp12`, consultare le tabelle e scorrere i record a pagine.
+A read-only Windows application for opening FileMaker `.fp3`, `.fp5`, `.fp7`,
+and `.fmp12` files, browsing tables, and viewing records page by page.
 
-## Avvio
+## Getting started
 
-1. Crea il virtual environment con `python -m venv .venv`.
-2. Avvia `Avvia.bat`.
-3. Premi **Sfoglia…**, scegli un file supportato e premi **Apri**.
+1. Create the virtual environment with `python -m venv .venv`.
+2. Run `Run.bat`.
+3. Click **Browse…**, select a supported file, and click **Open**.
 
-Le intestazioni delle colonne ordinano i record; la ricerca parte dopo almeno
-3 caratteri. Con più di 10 tabelle viene mostrato un selettore. Il programma
-conserva una cache locale per evitare di rileggere ogni volta il file originale.
-La finestra **Struttura** mostra tabelle e campi decodificati, e separa le
-possibili relazioni dedotte dai nomi dei campi.
+Click a column heading to sort records. Search starts after you enter at least
+3 characters. When a database contains more than 10 tables, the app uses a
+table selector. The app keeps a local cache so it does not need to reread the
+source file each time. The **Structure** window lists decoded tables and fields
+and shows possible links separately from verified relationships.
 
-## Formati e limiti
+## Supported formats and limitations
 
-- Sono supportate le quattro estensioni elencate nella guida tecnica
-  `fmptools/HACKING`: `.fp3`, `.fp5`, `.fp7` e `.fmp12`.
-- I file `.fp3` e `.fp5` usano la famiglia binaria legacy; `.fp7` e `.fmp12`
-  usano la famiglia moderna. Le intestazioni vengono controllate prima della
-  lettura.
-- I file protetti da **Encryption at Rest** non sono leggibili da questo
-  estrattore.
-- Il lettore recupera tabelle, nomi dei campi e valori tabellari. Per `.fp3` e
-  `.fp5` espone anche i tipi di campo presenti nei metadati documentati; la
-  guida non descrive abbastanza i tipi per `.fp7` e `.fmp12`.
-- `fmptools/HACKING` descrive l’estrazione di dati tabellari, ma non il formato
-  del grafo relazionale di FileMaker. La scheda **Collegamenti ipotizzati**
-  propone corrispondenze basate sui nomi dei campi: non sono relazioni verificate
-  né sostituiscono la visualizzazione del grafico relazionale in FileMaker.
-- Layout, script, calcoli, privilegi degli account e contenuti esterni di tipo
-  container non vengono ricostruiti. La lettura grezza non applica i privilegi
-  FileMaker dell’account.
-- La cache JSONL resta nella cartella `cache`; log e file recenti si trovano in
-  `%LOCALAPPDATA%\FMP12Viewer`. Queste cartelle contengono dati locali e non
-  fanno parte del repository.
+- Supports the four extensions listed in the `fmptools/HACKING` format guide:
+  `.fp3`, `.fp5`, `.fp7`, and `.fmp12`.
+- `.fp3` and `.fp5` use the legacy binary family; `.fp7` and `.fmp12` use the
+  modern family. The reader checks the file header before parsing it.
+- Files protected with **Encryption at Rest** cannot be read by this extractor.
+- The reader extracts tables, field names, and tabular values. It also reads
+  field types from the documented metadata in `.fp3` and `.fp5`; the guide does
+  not describe enough metadata to recover field types in `.fp7` and `.fmp12`.
+- The guide does not document FileMaker's relationship graph. The **Possible
+  links** tab suggests matches based on field names; these are unverified and
+  do not replace the relationship graph in FileMaker.
+- Layouts, scripts, calculations, account privileges, and external container
+  contents are not reconstructed. Reading the raw file does not enforce
+  FileMaker account privileges.
+- JSONL cache files are stored in the project `cache` folder. Logs and the list
+  of recent files are stored under `%LOCALAPPDATA%`. These local files are
+  excluded from the Git repository.
 
-## Compilazione accelerata
+## Accelerated build
 
-L'applicazione funziona anche con il lettore Python incluso. Per compilare il
-lettore con Cython sono necessari Cython e Microsoft C++ Build Tools; esegui
-`CompilaCython.bat` dopo aver creato `.venv`.
+The app can use the included Python reader. To compile the reader with Cython,
+install Cython and Microsoft C++ Build Tools, create `.venv`, and run
+`BuildCython.bat`.
 
-## Fonte tecnica e attribuzione
+## Technical source and attribution
 
-La descrizione dei bytecode, dei settori e dei percorsi dei dati è stata presa
-da [Evan Miller, `fmptools/HACKING`](https://github.com/evanmiller/fmptools/blob/main/HACKING).
-La famiglia dei formati e il comportamento del lettore di riferimento sono
-stati confrontati anche con il codice sorgente di
-[`evanmiller/fmptools`](https://github.com/evanmiller/fmptools). Il lettore
-Python di questo progetto implementa le strutture documentate e include
-un'interpretazione dei campi legacy; non include il codice C di `fmptools`.
+The bytecode, sector, and data-path descriptions come from
+[Evan Miller's `fmptools/HACKING` guide](https://github.com/evanmiller/fmptools/blob/main/HACKING).
+The format families and reference-reader behavior were also compared with the
+[`evanmiller/fmptools` source repository](https://github.com/evanmiller/fmptools).
+This project's Python reader implements the documented structures and includes
+an interpretation of legacy field metadata; it does not bundle the `fmptools`
+C source code.
 
-`fmptools` è distribuito con licenza MIT. La nota di attribuzione e il testo
-della licenza sono riportati in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-Il formato FileMaker è proprietario; la documentazione citata è basata su
-reverse engineering e alcune varianti possono non essere riconosciute.
+`fmptools` is distributed under the MIT License. The attribution and license
+text are included in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The
+FileMaker format is proprietary, and the cited reverse-engineered notes may not
+cover every file variation.

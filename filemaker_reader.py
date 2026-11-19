@@ -61,7 +61,7 @@ class FieldInfo:
     index: int
     name: str
     export_name: str = ""
-    type_name: str = "Non specificato"
+    type_name: str = "Unspecified"
 
 
 @dataclass(slots=True)
@@ -285,8 +285,8 @@ def _parse_legacy_payload(payload: bytes | memoryview, block_id: int) -> Iterato
         nonlocal pos
         if length < 0 or pos + length > len(payload):
             raise FMPError(
-                f"Settore {block_id}: chunk fp3/fp5 oltre il limite "
-                f"(offset {pos}, lunghezza {length})."
+                f"fp3/fp5 sector {block_id}: chunk exceeds bounds "
+                f"(offset {pos}, length {length})."
             )
         value = bytes(payload[pos : pos + length])
         pos += length
@@ -338,13 +338,13 @@ def _parse_legacy_payload(payload: bytes | memoryview, block_id: int) -> Iterato
                 chunk = Chunk(code, "simple_ref", take(value_length), simple_key=key, legacy=True)
             else:
                 raise FMPError(
-                    f"Settore {block_id}: codice fp3/fp5 non riconosciuto "
-                    f"0xFF 0x{kind:02X} all'offset {offset}."
+                    f"fp3/fp5 sector {block_id}: unrecognized code "
+                    f"0xFF 0x{kind:02X} at offset {offset}."
                 )
         else:
             raise FMPError(
-                f"Settore {block_id}: codice fp3/fp5 non riconosciuto "
-                f"0x{code:02X} all'offset {offset}."
+                f"fp3/fp5 sector {block_id}: unrecognized code "
+                f"0x{code:02X} at offset {offset}."
             )
         yield chunk
 
@@ -357,8 +357,8 @@ def _parse_payload(payload: bytes | memoryview, block_id: int) -> Iterator[Chunk
         nonlocal pos
         if length < 0 or pos + length > len(payload):
             raise FMPError(
-                f"Settore {block_id}: dati oltre il limite durante la lettura di un chunk "
-                f"(offset {pos}, lunghezza {length})."
+                f"Sector {block_id}: chunk data exceeds bounds while reading "
+                f"(offset {pos}, length {length})."
             )
         data = bytes(payload[pos : pos + length])
         pos += length
@@ -466,8 +466,8 @@ def _parse_payload(payload: bytes | memoryview, block_id: int) -> Iterator[Chunk
             chunk = None
         else:
             raise FMPError(
-                f"Settore {block_id}: codice FileMaker non riconosciuto "
-                f"0x{original_code:02X} all'offset {offset}."
+                f"Sector {block_id}: unrecognized FileMaker code "
+                f"0x{original_code:02X} at offset {offset}."
             )
 
         if chunk is not None:
@@ -477,7 +477,7 @@ def _parse_payload(payload: bytes | memoryview, block_id: int) -> Iterator[Chunk
             delayed_pops -= 1
 
 
-class FMP12Reader:
+class FileMakerReader:
     """Indexes FileMaker sectors and streams legacy or modern leaf blocks."""
 
     def __init__(
@@ -500,7 +500,7 @@ class FMP12Reader:
 
     def _check_cancel(self) -> None:
         if self.cancel is not None and self.cancel.is_set():
-            raise FMPError("Estrazione annullata.")
+            raise FMPError("Extraction canceled.")
 
     def _report(self, phase: str, done: int, total: int) -> None:
         if self.progress is not None:
@@ -513,21 +513,21 @@ class FMP12Reader:
             self.mtime_ns = stat.st_mtime_ns
             extension = self.path.suffix.lower()
             if extension not in SUPPORTED_EXTENSIONS:
-                raise FMPError("Estensioni supportate: .fp3, .fp5, .fp7 e .fmp12.")
+                raise FMPError("Supported extensions are .fp3, .fp5, .fp7, and .fmp12.")
             with self.path.open("rb") as stream:
                 header = stream.read(1024)
                 if len(header) != 1024 or header[:15] != MAGIC:
-                    raise FMPError("Il file non ha un'intestazione FileMaker riconosciuta.")
+                    raise FMPError("The file does not have a recognized FileMaker header.")
                 marker = header[15:20]
                 if marker == b"HBAMe":
                     raise FMPError(
-                        "Il file usa Encryption at Rest. Il lettore non può decifrarlo."
+                        "The file uses Encryption at Rest and cannot be decrypted by this reader."
                     )
                 if marker == b"HBAM7":
                     if extension in {".fp3", ".fp5"}:
                         raise FMPError(
-                            "L'intestazione è di un file FP7/FMP12, ma l'estensione è "
-                            f"{extension}. Rinomina il file con l'estensione corretta."
+                            "The header identifies an FP7/FMP12 file, but its extension is "
+                            f"{extension}. Rename the file with the matching extension."
                         )
                     self.version = 12 if header[521] == 0x1E else 7
                     self.format_name = "FMP12" if self.version == 12 else "FP7"
@@ -535,7 +535,7 @@ class FMP12Reader:
                 else:
                     if extension in {".fp7", ".fmp12"}:
                         raise FMPError(
-                            f"L'intestazione non corrisponde a un file {extension}."
+                            f"The header does not match a {extension} file."
                         )
                     self.legacy = True
                     self.version = 3 if extension == ".fp3" else 5
@@ -545,17 +545,17 @@ class FMP12Reader:
             after = self.path.stat()
             if after.st_size != self.file_size or after.st_mtime_ns != self.mtime_ns:
                 raise FMPError(
-                    "Il file è cambiato durante la lettura. Riprovare con una copia stabile."
+                    "The file changed while it was being read. Retry with a stable copy."
                 )
         except OSError as exc:
-            raise FMPError(f"Impossibile leggere il file: {exc}") from exc
+            raise FMPError(f"Could not read the file: {exc}") from exc
 
     def _index_modern(self, stream) -> None:
         if self.file_size % SECTOR_SIZE:
-            raise FMPError("La dimensione del file non è multipla del settore FP7/FMP12.")
+            raise FMPError("The file size is not a multiple of an FP7/FMP12 sector.")
         sector_count = self.file_size // SECTOR_SIZE
         if sector_count < 3:
-            raise FMPError("Il file è troppo corto per contenere settori dati.")
+            raise FMPError("The file is too short to contain data sectors.")
 
         self.blocks = [None] * sector_count
         final_id = 0
@@ -564,7 +564,7 @@ class FMP12Reader:
             self._check_cancel()
             sector = stream.read(SECTOR_SIZE)
             if len(sector) != SECTOR_SIZE:
-                raise FMPError(f"Settore {block_id}: lettura incompleta del file.")
+                raise FMPError(f"Sector {block_id}: incomplete file read.")
             block = BlockRef(
                 block_id,
                 _read_uint(sector[12:14]),
@@ -575,11 +575,11 @@ class FMP12Reader:
             if block_id == 1:
                 final_id = block.next_id
             if block_id % 512 == 0:
-                self._report("Indicizzazione settori", block_id, sector_count - 1)
+                self._report("Indexing sectors", block_id, sector_count - 1)
 
         if final_id == 0 or final_id != sector_count - 1:
-            raise FMPError("Il conteggio dei settori non coincide con l'intestazione.")
-        self._report("Indicizzazione settori", sector_count - 1, sector_count - 1)
+            raise FMPError("The sector count does not match the file header.")
+        self._report("Indexing sectors", sector_count - 1, sector_count - 1)
         first_leaf = next(
             (
                 block_id
@@ -594,21 +594,21 @@ class FMP12Reader:
 
     def _index_legacy(self, stream) -> None:
         if self.file_size % LEGACY_SECTOR_SIZE:
-            raise FMPError("La dimensione del file non è multipla del settore fp3/fp5.")
+            raise FMPError("The file size is not a multiple of an fp3/fp5 sector.")
         sector_count = self.file_size // LEGACY_SECTOR_SIZE
         if sector_count < 4:
-            raise FMPError("Il file è troppo corto per contenere settori fp3/fp5.")
+            raise FMPError("The file is too short to contain fp3/fp5 sectors.")
 
         # fmptools treats the sector at physical index 2 as the initial/root
         # sector and follows the leaf chain beginning at logical block 2.
         stream.seek(2 * LEGACY_SECTOR_SIZE)
         first_sector = stream.read(LEGACY_SECTOR_SIZE)
         if len(first_sector) != LEGACY_SECTOR_SIZE:
-            raise FMPError("Il settore iniziale fp3/fp5 è incompleto.")
+            raise FMPError("The initial fp3/fp5 sector is incomplete.")
         final_id = _read_uint(first_sector[6:10])
         if final_id == 0 or final_id + 2 != sector_count:
             raise FMPError(
-                "Il conteggio dei settori fp3/fp5 non coincide con l'intestazione."
+                "The fp3/fp5 sector count does not match the file header."
             )
 
         self.blocks = [None] * (final_id + 1)
@@ -621,10 +621,10 @@ class FMP12Reader:
                 stream.seek(physical_index * LEGACY_SECTOR_SIZE)
                 sector = stream.read(LEGACY_SECTOR_SIZE)
             if len(sector) != LEGACY_SECTOR_SIZE:
-                raise FMPError(f"Settore fp3/fp5 {block_id}: lettura incompleta.")
+                raise FMPError(f"fp3/fp5 sector {block_id}: incomplete read.")
             payload_length = _read_uint(sector[12:14])
             if payload_length > LEGACY_SECTOR_SIZE - LEGACY_SECTOR_HEADER_SIZE:
-                raise FMPError(f"Settore fp3/fp5 {block_id}: lunghezza non valida.")
+                raise FMPError(f"fp3/fp5 sector {block_id}: invalid payload length.")
             self.blocks[block_id] = BlockRef(
                 block_id,
                 sector[1],
@@ -633,8 +633,8 @@ class FMP12Reader:
                 payload_length,
             )
             if block_id % 512 == 0:
-                self._report("Indicizzazione settori", block_id, final_id)
-        self._report("Indicizzazione settori", final_id, final_id)
+                self._report("Indexing sectors", block_id, final_id)
+        self._report("Indexing sectors", final_id, final_id)
         self._follow_leaf_chain(2, final_id)
 
     def _follow_leaf_chain(self, first_leaf: int, final_id: int) -> None:
@@ -643,17 +643,17 @@ class FMP12Reader:
         while block_id:
             self._check_cancel()
             if block_id <= 0 or block_id > final_id:
-                raise FMPError(f"Il collegamento al settore {block_id} è fuori dal file.")
+                raise FMPError(f"The link to sector {block_id} points outside the file.")
             if block_id in visited:
-                raise FMPError("La catena dei settori contiene un ciclo.")
+                raise FMPError("The sector chain contains a cycle.")
             visited.add(block_id)
             block = self.blocks[block_id]
             if block is None:
-                raise FMPError(f"Settore {block_id} mancante.")
+                raise FMPError(f"Sector {block_id} is missing.")
             self.leaf_chain.append(block_id)
             block_id = block.next_id
         if not self.leaf_chain:
-            raise FMPError("Non sono stati trovati settori di dati.")
+            raise FMPError("No data sectors were found.")
 
     def iter_chunks(self, phase: str) -> Iterator[Chunk]:
         try:
@@ -693,7 +693,7 @@ class FMP12Reader:
                         if number % 128 == 0 or number == len(self.leaf_chain):
                             self._report(phase, number, len(self.leaf_chain))
         except OSError as exc:
-            raise FMPError(f"Impossibile rileggere il file: {exc}") from exc
+            raise FMPError(f"Could not reread the file: {exc}") from exc
 
     def discover_schema(self) -> list[TableInfo]:
         if self.legacy:
@@ -702,7 +702,7 @@ class FMP12Reader:
         table_names: dict[int, str] = {}
         column_names: dict[int, dict[int, str]] = {}
 
-        for chunk in self.iter_chunks("Lettura tabelle e campi"):
+        for chunk in self.iter_chunks("Reading tables and fields"):
             path = chunk.path
             values = _path_values(path, chunk.legacy)
 
@@ -734,16 +734,16 @@ class FMP12Reader:
         indexes = sorted(set(table_names) | set(column_names))
         if not indexes:
             raise FMPError(
-                "Non ho trovato tabelle. Il file potrebbe usare una variante non supportata."
+                "No tables were found. The file may use an unsupported variant."
             )
         tables: list[TableInfo] = []
         for table_index in indexes:
             name = table_names.get(table_index, "").strip()
             if not name:
-                name = f"Tabella_{table_index}"
+                name = f"Table_{table_index}"
             names = column_names.get(table_index, {})
             fields = [
-                FieldInfo(index, names.get(index, "").strip() or f"Campo_{index}")
+                FieldInfo(index, names.get(index, "").strip() or f"Field_{index}")
                 for index in sorted(names)
             ]
             tables.append(TableInfo(table_index, name, fields))
@@ -753,17 +753,17 @@ class FMP12Reader:
         column_names: dict[int, str] = {}
         column_types: dict[int, str] = {}
         legacy_types = {
-            0: "Sconosciuto",
-            1: "Testo",
-            2: "Numero",
-            3: "Data",
-            4: "Ora",
-            5: "Contenitore",
-            6: "Calcolo",
-            7: "Riassunto",
-            8: "Globale",
+            0: "Unknown",
+            1: "Text",
+            2: "Number",
+            3: "Date",
+            4: "Time",
+            5: "Container",
+            6: "Calculation",
+            7: "Summary",
+            8: "Global",
         }
-        for chunk in self.iter_chunks("Lettura tabelle e campi"):
+        for chunk in self.iter_chunks("Reading tables and fields"):
             values = _path_values(chunk.path, legacy=True)
             if len(values) != 3 or values[:2] != (3, 5):
                 continue
@@ -774,20 +774,20 @@ class FMP12Reader:
                 column_names[column_index] = decode_legacy_text(chunk.data).strip()
             elif chunk.simple_key == 2 and len(chunk.data) >= 2:
                 column_types[column_index] = legacy_types.get(
-                    chunk.data[1], "Sconosciuto"
+                    chunk.data[1], "Unknown"
                 )
 
         if not column_names:
             raise FMPError(
-                "Non ho trovato campi nel file fp3/fp5. Il file potrebbe usare "
-                "una variante non supportata."
+                "No fields were found in the fp3/fp5 file. It may use an "
+                "unsupported variant."
             )
         table_name = self.path.stem.strip() or self.format_name
         fields = [
             FieldInfo(
                 index=index,
-                name=name or f"Campo_{index}",
-                type_name=column_types.get(index, "Sconosciuto"),
+                name=name or f"Field_{index}",
+                type_name=column_types.get(index, "Unknown"),
             )
             for index, name in sorted(column_names.items())
         ]
@@ -998,14 +998,14 @@ class _LegacyValueState:
 
 
 def _iter_value_events(
-    reader: FMP12Reader, tables: list[TableInfo]
+    reader: FileMakerReader, tables: list[TableInfo]
 ) -> Iterator[tuple[int, int, int, str]]:
     if reader.legacy:
         if not tables:
             return
         table = tables[0]
         state = _LegacyValueState(table)
-        for chunk in reader.iter_chunks("Estrazione record"):
+        for chunk in reader.iter_chunks("Extracting records"):
             event = state.consume(chunk)
             if event is not None:
                 row, column, value = event
@@ -1018,7 +1018,7 @@ def _iter_value_events(
 
     by_index = {table.index: table for table in tables}
     states = {table.index: _ValueState(table) for table in tables}
-    for chunk in reader.iter_chunks("Estrazione record"):
+    for chunk in reader.iter_chunks("Extracting records"):
         if len(chunk.path) < 3:
             continue
         root = _path_value(chunk.path[0])
@@ -1165,7 +1165,7 @@ def _prepare_json_tables(tables: list[TableInfo]) -> dict[int, dict[int, int]]:
     field_positions: dict[int, dict[int, int]] = {}
     for table in tables:
         table.export_name = _unique_name(
-            table.name, used_table_names, f"Tabella_{table.index}"
+            table.name, used_table_names, f"Table_{table.index}"
         )
         used_field_names: set[str] = set()
         table.order_field = _unique_name(
@@ -1173,7 +1173,7 @@ def _prepare_json_tables(tables: list[TableInfo]) -> dict[int, dict[int, int]]:
         )
         for field_info in table.fields:
             field_info.export_name = _unique_name(
-                field_info.name, used_field_names, f"Campo_{field_info.index}"
+                field_info.name, used_field_names, f"Field_{field_info.index}"
             )
         field_positions[table.index] = {
             field_info.index: position
@@ -1259,7 +1259,7 @@ def export_to_json_cache(
     source_path = Path(source).resolve()
     destination_path = Path(destination).resolve()
     destination_path.parent.mkdir(parents=True, exist_ok=True)
-    reader = FMP12Reader(source_path, progress, cancel)
+    reader = FileMakerReader(source_path, progress, cancel)
     tables = reader.discover_schema()
     _check_cancel(cancel)
     field_positions = _prepare_json_tables(tables)
@@ -1278,7 +1278,7 @@ def export_to_json_cache(
         }
         try:
             if progress is not None:
-                progress("Estrazione record", 0, len(reader.leaf_chain))
+                progress("Extracting records", 0, len(reader.leaf_chain))
             for table_index, row, column, value in _iter_value_events(reader, tables):
                 _check_cancel(cancel)
                 writers[table_index].add(row, column, value)
@@ -1292,8 +1292,7 @@ def export_to_json_cache(
                 or final_stat.st_mtime_ns != reader.mtime_ns
             ):
                 raise FMPError(
-                    "Il file sorgente è cambiato durante l'estrazione; "
-                    "il risultato è stato scartato."
+                    "The source file changed during extraction; the result was discarded."
                 )
             result = _commit_json_cache(
                 source_path,
@@ -1313,7 +1312,7 @@ def export_to_json_cache(
             raise
 
     if progress is not None:
-        progress("Completato", 1, 1)
+        progress("Complete", 1, 1)
     return result, tables
 
 
@@ -1327,7 +1326,7 @@ def export_to_sqlite(
     source_path = Path(source).resolve()
     destination_path = Path(destination).resolve()
     destination_path.parent.mkdir(parents=True, exist_ok=True)
-    reader = FMP12Reader(source_path, progress, cancel)
+    reader = FileMakerReader(source_path, progress, cancel)
     tables = reader.discover_schema()
     _check_cancel(cancel)
 
@@ -1362,7 +1361,7 @@ def export_to_sqlite(
             field_positions: dict[int, dict[int, int]] = {}
             for table in tables:
                 table.export_name = _unique_name(
-                    table.name, used_table_names, f"Tabella_{table.index}"
+                    table.name, used_table_names, f"Table_{table.index}"
                 )
                 used_field_names: set[str] = set()
                 table.order_field = _unique_name(
@@ -1370,7 +1369,7 @@ def export_to_sqlite(
                 )
                 for field_info in table.fields:
                     field_info.export_name = _unique_name(
-                        field_info.name, used_field_names, f"Campo_{field_info.index}"
+                        field_info.name, used_field_names, f"Field_{field_info.index}"
                     )
                 field_positions[table.index] = {
                     field_info.index: position
@@ -1403,7 +1402,7 @@ def export_to_sqlite(
                 )
 
             if progress is not None:
-                progress("Estrazione record", 0, len(reader.leaf_chain))
+                progress("Extracting records", 0, len(reader.leaf_chain))
             for table_index, row, column, value in _iter_value_events(reader, tables):
                 _check_cancel(cancel)
                 writers[table_index].add(row, column, value)
@@ -1421,7 +1420,7 @@ def export_to_sqlite(
                 "source_mtime_ns": str(stat.st_mtime_ns),
                 "format": reader.format_name,
                 "format_version": str(reader.version),
-                "reader": "Python FMP12 Viewer",
+                "reader": "Python FileMaker Viewer",
             }
             connection.executemany(
                 "INSERT INTO _fmp_metadata (key, value) VALUES (?, ?)",
@@ -1433,11 +1432,11 @@ def export_to_sqlite(
         final_stat = source_path.stat()
         if final_stat.st_size != reader.file_size or final_stat.st_mtime_ns != reader.mtime_ns:
             raise FMPError(
-                "Il file sorgente è cambiato durante l'estrazione; il risultato è stato scartato."
+                "The source file changed during extraction; the result was discarded."
             )
         os.replace(temporary_path, destination_path)
         if progress is not None:
-            progress("Completato", 1, 1)
+            progress("Complete", 1, 1)
         return destination_path, tables
     except Exception:
         try:
@@ -1538,7 +1537,7 @@ def load_catalogue(manifest_path: str | Path) -> list[TableInfo]:
     try:
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
         if manifest.get("format") != "fmp12-viewer-json-cache":
-            raise FMPError("Il file di cache JSON non è riconosciuto.")
+            raise FMPError("The JSON cache format is not recognized.")
         tables: list[TableInfo] = []
         for row in manifest["tables"]:
             fields = [
@@ -1546,7 +1545,7 @@ def load_catalogue(manifest_path: str | Path) -> list[TableInfo]:
                     index=field_info["index"],
                     name=field_info["name"],
                     export_name=field_info.get("export_name", field_info["name"]),
-                    type_name=field_info.get("type_name", "Non specificato"),
+                    type_name=field_info.get("type_name", "Unspecified"),
                 )
                 for field_info in row["fields"]
             ]
@@ -1565,7 +1564,7 @@ def load_catalogue(manifest_path: str | Path) -> list[TableInfo]:
             )
         return tables
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise FMPError(f"Cache JSON non leggibile: {exc}") from exc
+        raise FMPError(f"Could not read the JSON cache: {exc}") from exc
 
 
 def read_json_page(
@@ -1576,7 +1575,7 @@ def read_json_page(
 ) -> list[list[object]]:
     manifest_file = Path(manifest_path)
     if not table.data_file or table.index_stride < 1:
-        raise FMPError("Indice della cache JSON non valido.")
+        raise FMPError("Invalid JSON cache index.")
     checkpoint = offset // table.index_stride
     if checkpoint >= len(table.row_offsets):
         return []
@@ -1594,7 +1593,7 @@ def read_json_page(
                 break
             row = json.loads(line)
             if not isinstance(row, list):
-                raise FMPError("Riga non valida nella cache JSON.")
+                raise FMPError("Invalid row in the JSON cache.")
             rows.append(row)
     return rows
 
@@ -1653,7 +1652,7 @@ def build_sort_index(
     if sort_index_is_fresh(index_path, manifest_file, table, column_index):
         return index_path
     if column_index < -1 or column_index >= len(table.fields):
-        raise FMPError("La colonna selezionata non è valida.")
+        raise FMPError("The selected column is invalid.")
 
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=index_path.name + ".", suffix=".partial", dir=index_path.parent
@@ -1672,7 +1671,7 @@ def build_sort_index(
             "is_empty INTEGER NOT NULL, text_key TEXT NOT NULL, numeric_key REAL)"
         )
         if progress is not None:
-            progress("Lettura valori per ordinamento", 0, table.record_count)
+            progress("Reading values for sorting", 0, table.record_count)
 
         batch: list[tuple[int, int, int, str, float | None]] = []
         completed = 0
@@ -1688,7 +1687,7 @@ def build_sort_index(
                     break
                 row = json.loads(line)
                 if not isinstance(row, list) or not row:
-                    raise FMPError("Riga non valida nella cache JSON.")
+                    raise FMPError("Invalid row in the JSON cache.")
                 record_number = int(row[0])
                 value = (
                     record_number
@@ -1726,7 +1725,7 @@ def build_sort_index(
                     completed == 1 or completed % 8192 == 0
                 ):
                     progress(
-                        "Lettura valori per ordinamento", completed, table.record_count
+                        "Reading values for sorting", completed, table.record_count
                     )
         if batch:
             connection.executemany(
@@ -1734,8 +1733,7 @@ def build_sort_index(
             )
         if completed != table.record_count:
             raise FMPError(
-                "La cache contiene un numero di record diverso da quello atteso; "
-                "ordinamento annullato."
+                "The cache has a different record count than expected; sorting was canceled."
             )
         connection.commit()
         _check_cancel(cancel)
@@ -1746,7 +1744,7 @@ def build_sort_index(
             else "text"
         )
         if progress is not None:
-            progress("Creazione indice", 0, 1)
+            progress("Building index", 0, 1)
         sort_key = "numeric_key" if sort_kind == "numeric" else "text_key"
         connection.execute(
             f"CREATE INDEX _fmp_sort_order ON _fmp_sort_rows "
@@ -1775,14 +1773,14 @@ def build_sort_index(
         _check_cancel(cancel)
         os.replace(temporary_path, index_path)
         if progress is not None:
-            progress("Ordinamento pronto", 1, 1)
+            progress("Sorting ready", 1, 1)
         return index_path
     except Exception as exc:
         if connection is not None:
             connection.close()
         temporary_path.unlink(missing_ok=True)
         if isinstance(exc, sqlite3.Error) and cancel is not None and cancel.is_set():
-            raise FMPError("Ordinamento annullato.") from exc
+            raise FMPError("Sorting canceled.") from exc
         raise
 
 
@@ -1820,7 +1818,7 @@ def read_sorted_json_page(
                 row[0] for row in connection.execute(query, (page_size, offset))
             ]
     except sqlite3.Error as exc:
-        raise FMPError(f"Indice di ordinamento non leggibile: {exc}") from exc
+        raise FMPError(f"Could not read the sort index: {exc}") from exc
 
     data_path = manifest_file.parent / table.data_file
     rows: list[list[object]] = []
@@ -1829,7 +1827,7 @@ def read_sorted_json_page(
             source.seek(data_offset)
             row = json.loads(source.readline())
             if not isinstance(row, list):
-                raise FMPError("Riga non valida nella cache JSON.")
+                raise FMPError("Invalid row in the JSON cache.")
             rows.append(row)
     return rows
 
@@ -1844,7 +1842,7 @@ def search_json_table(
     """Search every field in a table and write matching JSONL offsets to a temp index."""
     needle = query.strip().casefold()
     if len(needle) < 3:
-        raise FMPError("Inserisci almeno 3 caratteri per avviare la ricerca.")
+        raise FMPError("Enter at least 3 characters to start the search.")
 
     manifest_file = Path(manifest_path)
     data_path = manifest_file.parent / table.data_file
@@ -1863,7 +1861,7 @@ def search_json_table(
     try:
         with os.fdopen(file_descriptor, "wb") as offsets_file, data_path.open("rb") as data:
             if progress is not None:
-                progress("Ricerca nei record", 0, table.record_count)
+                progress("Searching records", 0, table.record_count)
             while True:
                 _check_cancel(cancel)
                 data_offset = data.tell()
@@ -1872,7 +1870,7 @@ def search_json_table(
                     break
                 row = json.loads(line)
                 if not isinstance(row, list):
-                    raise FMPError("Riga non valida nella cache JSON.")
+                    raise FMPError("Invalid row in the JSON cache.")
                 if any(
                     needle in str(value).casefold()
                     for value in row
@@ -1884,17 +1882,17 @@ def search_json_table(
                 if progress is not None and (
                     scanned == 1 or scanned % 8192 == 0
                 ):
-                    progress("Ricerca nei record", scanned, table.record_count)
+                    progress("Searching records", scanned, table.record_count)
             if scanned != table.record_count:
                 raise FMPError(
-                    "La cache contiene un numero di record diverso da quello atteso."
+                    "The cache has a different record count than expected."
                 )
             offsets_file.flush()
             os.fsync(offsets_file.fileno())
         _check_cancel(cancel)
         os.replace(temporary_path, result_path)
         if progress is not None:
-            progress("Ricerca completata", table.record_count, table.record_count)
+            progress("Search complete", table.record_count, table.record_count)
         return result_path, matches
     except Exception:
         temporary_path.unlink(missing_ok=True)
@@ -1915,7 +1913,7 @@ def read_search_page(
         offsets_file.seek(offset * 8)
         packed_offsets = offsets_file.read(page_size * 8)
     if len(packed_offsets) % 8:
-        raise FMPError("Indice dei risultati di ricerca incompleto.")
+        raise FMPError("The search result index is incomplete.")
     data_offsets = [
         struct.unpack_from("<Q", packed_offsets, position)[0]
         for position in range(0, len(packed_offsets), 8)
@@ -1928,7 +1926,7 @@ def read_search_page(
             data.seek(data_offset)
             row = json.loads(data.readline())
             if not isinstance(row, list):
-                raise FMPError("Riga non valida nella cache JSON.")
+                raise FMPError("Invalid row in the JSON cache.")
             rows.append(row)
     return rows
 
@@ -1969,7 +1967,7 @@ def convert_legacy_sqlite_cache(
     progress: ProgressCallback | None = None,
     cancel: threading.Event | None = None,
 ) -> tuple[Path, list[TableInfo]]:
-    """Convert an earlier local SQLite extraction to JSON without rereading FMP12."""
+    """Convert an earlier local SQLite extraction to JSON without rereading FileMaker."""
     source_path = Path(source).resolve()
     database_path = Path(database).resolve()
     destination_path = Path(destination).resolve()
@@ -2024,7 +2022,7 @@ def convert_legacy_sqlite_cache(
                         if progress is not None and (
                             completed == 1 or completed % 2048 == 0
                         ):
-                            progress("Conversione cache locale", completed, total_rows)
+                            progress("Converting local cache", completed, total_rows)
             for writer in writers.values():
                 writer.close()
             current_stat = source_path.stat()
@@ -2033,7 +2031,7 @@ def convert_legacy_sqlite_cache(
                 or current_stat.st_mtime_ns != source_stat.st_mtime_ns
             ):
                 raise FMPError(
-                    "Il file sorgente è cambiato durante la conversione della cache."
+                    "The source file changed while the cache was being converted."
                 )
             result = _commit_json_cache(
                 source_path,
@@ -2053,10 +2051,10 @@ def convert_legacy_sqlite_cache(
             raise
 
     if progress is not None:
-        progress("Completato", 1, 1)
+        progress("Complete", 1, 1)
     return result, tables
 
 
 def _check_cancel(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
-        raise FMPError("Estrazione annullata.")
+        raise FMPError("Extraction canceled.")

@@ -12,7 +12,7 @@ import unicodedata
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from fmp12_reader import (
+from filemaker_reader import (
     FMPError,
     TableInfo,
     build_sort_index,
@@ -35,11 +35,16 @@ from fmp12_reader import (
 APP_TITLE = "FileMaker Viewer"
 PAGE_SIZES = ("50", "100", "250")
 RECENT_LIMIT = 10
-LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "FMP12Viewer" / "logs"
+APP_DATA_DIR = Path(
+    os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+) / "FileMakerViewer"
+LEGACY_APP_DATA_DIR = APP_DATA_DIR.parent / "FMP12Viewer"
+LOG_DIR = APP_DATA_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "viewer.log"
-RECENT_FILES_PATH = LOG_DIR.parent / "recent_files.json"
-LOGGER = logging.getLogger("fmp12viewer")
+RECENT_FILES_PATH = APP_DATA_DIR / "recent_files.json"
+LEGACY_RECENT_FILES_PATH = LEGACY_APP_DATA_DIR / "recent_files.json"
+LOGGER = logging.getLogger("filemakerviewer")
 if not LOGGER.handlers:
     log_handler = logging.handlers.RotatingFileHandler(
         LOG_PATH, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
@@ -49,12 +54,12 @@ if not LOGGER.handlers:
     )
     LOGGER.addHandler(log_handler)
     LOGGER.setLevel(logging.INFO)
-    LOGGER.info("Avvio applicazione.")
+    LOGGER.info("Application started.")
 DEFAULT_DATABASES = Path.home() / "Documents"
 SUPPORTED_EXTENSIONS = {".fp3", ".fp5", ".fp7", ".fmp12"}
 
 
-class FMP12Viewer:
+class FileMakerViewer:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(APP_TITLE)
@@ -65,8 +70,8 @@ class FMP12Viewer:
         self.path_var = tk.StringVar()
         self.recent_files = self._load_recent_files()
         self.search_var = tk.StringVar()
-        self.search_status_var = tk.StringVar(value="Inserisci almeno 3 caratteri")
-        self.status_var = tk.StringVar(value="Seleziona un file FileMaker.")
+        self.search_status_var = tk.StringVar(value="Enter at least 3 characters.")
+        self.status_var = tk.StringVar(value="Select a FileMaker file.")
         self.events: queue.Queue[tuple] = queue.Queue()
         self.search_events: queue.Queue[tuple] = queue.Queue()
         self.cancel_event: threading.Event | None = None
@@ -95,7 +100,7 @@ class FMP12Viewer:
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.columnconfigure(1, weight=1)
 
-        ttk.Label(toolbar, text="Database FileMaker").grid(row=0, column=0, padx=(0, 8))
+        ttk.Label(toolbar, text="FileMaker database").grid(row=0, column=0, padx=(0, 8))
         self.path_entry = ttk.Combobox(
             toolbar,
             textvariable=self.path_var,
@@ -106,17 +111,17 @@ class FMP12Viewer:
         self.path_entry.grid(row=0, column=1, sticky="ew")
         self.path_entry.bind("<<ComboboxSelected>>", self._open_selected_recent)
         self.browse_button = ttk.Button(
-            toolbar, text="Sfoglia…", command=self.browse_file
+            toolbar, text="Browse…", command=self.browse_file
         )
         self.browse_button.grid(row=0, column=2, padx=(8, 8))
         self.structure_button = ttk.Button(
-            toolbar, text="Struttura", command=self.show_structure
+            toolbar, text="Structure", command=self.show_structure
         )
         self.structure_button.grid(row=0, column=3, padx=(0, 8))
-        self.log_button = ttk.Button(toolbar, text="Log", command=self.show_logs)
+        self.log_button = ttk.Button(toolbar, text="Logs", command=self.show_logs)
         self.log_button.grid(row=0, column=4, padx=(0, 8))
         self.open_button = ttk.Button(
-            toolbar, text="Apri", command=self.open_file, default="active"
+            toolbar, text="Open", command=self.open_file, default="active"
         )
         self.open_button.grid(row=0, column=5, sticky="e")
         self.root.bind("<Return>", lambda _event: self.open_file())
@@ -124,13 +129,13 @@ class FMP12Viewer:
         search_bar = ttk.Frame(self.root, padding=(10, 2, 10, 6))
         search_bar.grid(row=1, column=0, sticky="ew")
         search_bar.columnconfigure(1, weight=1)
-        ttk.Label(search_bar, text="Cerca in tutti i record").grid(
+        ttk.Label(search_bar, text="Search all records").grid(
             row=0, column=0, padx=(0, 8)
         )
         self.search_entry = ttk.Entry(search_bar, textvariable=self.search_var)
         self.search_entry.grid(row=0, column=1, sticky="ew")
         self.search_entry.bind("<Return>", self._search_enter)
-        ttk.Button(search_bar, text="Pulisci", command=self._clear_search).grid(
+        ttk.Button(search_bar, text="Clear", command=self._clear_search).grid(
             row=0, column=2, padx=(6, 10)
         )
         ttk.Label(
@@ -156,7 +161,7 @@ class FMP12Viewer:
         self.selector_view.rowconfigure(1, weight=1)
         selector_toolbar = ttk.Frame(self.selector_view, padding=(0, 0, 0, 6))
         selector_toolbar.grid(row=0, column=0, sticky="ew")
-        ttk.Label(selector_toolbar, text="Tabella").grid(row=0, column=0, padx=(0, 8))
+        ttk.Label(selector_toolbar, text="Table").grid(row=0, column=0, padx=(0, 8))
         self.table_selector = ttk.Combobox(
             selector_toolbar, state="readonly", width=48, height=15
         )
@@ -183,10 +188,14 @@ class FMP12Viewer:
 
     @staticmethod
     def _load_recent_files() -> list[str]:
-        try:
-            entries = json.loads(RECENT_FILES_PATH.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return []
+        entries = None
+        for recent_path in (RECENT_FILES_PATH, LEGACY_RECENT_FILES_PATH):
+            try:
+                entries = json.loads(recent_path.read_text(encoding="utf-8"))
+                if isinstance(entries, list):
+                    break
+            except (OSError, ValueError):
+                continue
         if not isinstance(entries, list):
             return []
         recent: list[str] = []
@@ -220,9 +229,9 @@ class FMP12Viewer:
                 encoding="utf-8",
             )
             os.replace(temporary, RECENT_FILES_PATH)
-            LOGGER.info("Cronologia aggiornata: %s file recenti.", len(self.recent_files))
+            LOGGER.info("Recent file list updated: %s files.", len(self.recent_files))
         except OSError:
-            LOGGER.exception("Impossibile salvare la cronologia dei file recenti.")
+            LOGGER.exception("Could not save the recent file list.")
 
     def _open_selected_recent(self, _event: tk.Event) -> None:
         if self.path_var.get().strip():
@@ -275,7 +284,7 @@ class FMP12Viewer:
             try:
                 Path(result_path).unlink(missing_ok=True)
             except OSError:
-                LOGGER.exception("Impossibile eliminare l'indice temporaneo di ricerca.")
+                LOGGER.exception("Could not remove the temporary search index.")
         state["search_result_path"] = None
         state["search_match_count"] = None
         state["search_query"] = None
@@ -303,18 +312,18 @@ class FMP12Viewer:
 
         query = self.search_var.get().strip()
         if len(query) < 3:
-            self.search_status_var.set("Inserisci almeno 3 caratteri")
+            self.search_status_var.set("Enter at least 3 characters.")
             return
         state = self._current_table_state() if self.tabs else None
         if self.database_path is None or state is None:
-            self.search_status_var.set("Apri prima un database")
+            self.search_status_var.set("Open a database first.")
             return
         state["tree"].delete(*state["tree"].get_children())
-        state["page_label"].set("Ricerca in attesa…")
+        state["page_label"].set("Search queued…")
         state["previous"].configure(state="disabled")
         state["following"].configure(state="disabled")
         state["page_size_box"].configure(state="disabled")
-        self.search_status_var.set("Ricerca in attesa…")
+        self.search_status_var.set("Search queued…")
         self._schedule_search(state)
 
     def _search_tab_changed(self, _event: tk.Event | None = None) -> None:
@@ -335,26 +344,26 @@ class FMP12Viewer:
             and Path(result_path).is_file()
         ):
             self.search_status_var.set(
-                f"{state['search_match_count']:,} risultati"
+                f"{state['search_match_count']:,} matches"
             )
             self._fetch_page(state)
             return
         state["tree"].delete(*state["tree"].get_children())
-        state["page_label"].set("Ricerca in attesa…")
+        state["page_label"].set("Search queued…")
         state["previous"].configure(state="disabled")
         state["following"].configure(state="disabled")
         state["page_size_box"].configure(state="disabled")
-        self.search_status_var.set("Ricerca in attesa…")
+        self.search_status_var.set("Search queued…")
         self._schedule_search(state, 150)
 
     def _start_search(self, state: dict | None) -> None:
         self.search_after_id = None
         query = self.search_var.get().strip()
         if len(query) < 3:
-            self.search_status_var.set("Inserisci almeno 3 caratteri")
+            self.search_status_var.set("Enter at least 3 characters.")
             return
         if self.database_path is None or state is None:
-            self.search_status_var.set("Apri prima un database")
+            self.search_status_var.set("Open a database first.")
             return
         if (
             self.active_search is not None
@@ -371,7 +380,7 @@ class FMP12Viewer:
             and result_path is not None
             and Path(result_path).is_file()
         ):
-            self.search_status_var.set(f"{state['search_match_count']:,} risultati")
+            self.search_status_var.set(f"{state['search_match_count']:,} matches")
             self._fetch_page(state)
             return
 
@@ -387,11 +396,11 @@ class FMP12Viewer:
         state["search_match_count"] = None
         state["page_number"].set(1)
         state["tree"].delete(*state["tree"].get_children())
-        state["page_label"].set("Ricerca in corso…")
+        state["page_label"].set("Searching…")
         state["previous"].configure(state="disabled")
         state["following"].configure(state="disabled")
         state["page_size_box"].configure(state="disabled")
-        self.search_status_var.set("Ricerca in corso…")
+        self.search_status_var.set("Searching…")
 
         self.search_cancel_event = threading.Event()
         token = self.search_generation
@@ -400,7 +409,7 @@ class FMP12Viewer:
             target=self._search_worker,
             args=(self.database_path, state["table"], query, token, self.search_cancel_event),
             daemon=True,
-            name="fmp12-table-search",
+            name="filemaker-table-search",
         )
         worker.start()
 
@@ -423,8 +432,8 @@ class FMP12Viewer:
         except FMPError as exc:
             self.search_events.put(("error", token, str(exc)))
         except Exception as exc:
-            LOGGER.exception("Errore inatteso durante la ricerca.")
-            self.search_events.put(("error", token, f"Errore inatteso: {exc}"))
+            LOGGER.exception("Unexpected error during search.")
+            self.search_events.put(("error", token, f"Unexpected error: {exc}"))
 
     def _poll_search_events(self) -> None:
         try:
@@ -441,7 +450,7 @@ class FMP12Viewer:
                     continue
                 if kind == "progress":
                     self.search_status_var.set(
-                        f"Ricerca: {event[2]:,} / {event[3]:,} record"
+                        f"Searching: {event[2]:,} / {event[3]:,} records"
                     )
                 elif kind == "done":
                     active = self.active_search
@@ -453,9 +462,9 @@ class FMP12Viewer:
                     self.active_search = None
                     self.search_cancel_event = None
                     self._restore_search_controls(state)
-                    self.search_status_var.set(f"{event[3]:,} risultati")
+                    self.search_status_var.set(f"{event[3]:,} matches")
                     self.status_var.set(
-                        f"Ricerca completata: {event[3]:,} record corrispondenti."
+                        f"Search complete: {event[3]:,} matching records."
                     )
                     self._fetch_page(state)
                 elif kind == "error":
@@ -465,13 +474,13 @@ class FMP12Viewer:
                     self.search_cancel_event = None
                     self._reset_table_search(state)
                     self._fetch_page(state)
-                    if "annullat" in event[2].casefold():
-                        self.search_status_var.set("Ricerca annullata")
+                    if "cancel" in event[2].casefold():
+                        self.search_status_var.set("Search canceled")
                     else:
-                        LOGGER.error("Ricerca non riuscita: %s", event[2])
-                        self.search_status_var.set("Ricerca non riuscita")
+                        LOGGER.error("Search failed: %s", event[2])
+                        self.search_status_var.set("Search failed")
                         messagebox.showerror(
-                            "Errore di ricerca", event[2], parent=self.root
+                            "Search error", event[2], parent=self.root
                         )
         except queue.Empty:
             pass
@@ -496,11 +505,11 @@ class FMP12Viewer:
         start_dir = DEFAULT_DATABASES if DEFAULT_DATABASES.exists() else None
         selected = filedialog.askopenfilename(
             parent=self.root,
-            title="Seleziona un database FileMaker",
+            title="Select a FileMaker database",
             initialdir=str(start_dir) if start_dir else None,
             filetypes=(
-                ("Database FileMaker", "*.fp3 *.fp5 *.fp7 *.fmp12"),
-                ("Tutti i file", "*.*"),
+                ("FileMaker databases", "*.fp3 *.fp5 *.fp7 *.fmp12"),
+                ("All files", "*.*"),
             ),
         )
         if selected:
@@ -510,15 +519,15 @@ class FMP12Viewer:
         path = Path(self.path_var.get().strip().strip('"'))
         if not path.is_file():
             messagebox.showerror(
-                "File non trovato",
-                "Seleziona un file FileMaker esistente.",
+                "File not found",
+                "Select an existing FileMaker file.",
                 parent=self.root,
             )
             return
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             messagebox.showerror(
-                "Formato non supportato",
-                "Seleziona un file .fp3, .fp5, .fp7 o .fmp12.",
+                "Unsupported format",
+                "Choose a file with the .fp3, .fp5, .fp7, or .fmp12 extension.",
                 parent=self.root,
             )
             return
@@ -528,30 +537,30 @@ class FMP12Viewer:
         self._cancel_active_search()
         try:
             LOGGER.info(
-                "Apertura richiesta: %s (%s byte).",
+                "Open requested: %s (%s bytes).",
                 path,
                 path.stat().st_size,
             )
         except OSError:
-            LOGGER.exception("Impossibile leggere i metadati del file selezionato.")
+            LOGGER.exception("Could not read metadata for the selected file.")
 
         self.open_button.configure(state="disabled")
         self.browse_button.configure(state="disabled")
         self.path_entry.configure(state="disabled")
-        self.status_var.set(f"Preparazione di {path.name}…")
+        self.status_var.set(f"Preparing {path.name}…")
 
         try:
             cache = cache_path_for(path)
             if cache_is_fresh(path, cache):
-                LOGGER.info("Cache valida: %s", cache)
+                LOGGER.info("Cache is current: %s", cache)
                 self._show_database(cache, path)
                 self._restore_controls()
                 return
             legacy_cache = legacy_cache_path_for(path)
         except OSError as exc:
-            LOGGER.exception("Errore durante la preparazione della cache.")
+            LOGGER.exception("Could not prepare the cache.")
             self._restore_controls()
-            messagebox.showerror("Errore", str(exc), parent=self.root)
+            messagebox.showerror("Error", str(exc), parent=self.root)
             return
 
         self.cancel_event = threading.Event()
@@ -560,7 +569,7 @@ class FMP12Viewer:
             target=self._extract_worker,
             args=(path, cache, legacy_cache, self.cancel_event),
             daemon=True,
-            name="fmp12-extraction",
+            name="filemaker-extraction",
         )
         worker.start()
         self.root.after(100, self._poll_events)
@@ -568,7 +577,7 @@ class FMP12Viewer:
     def _show_progress_dialog(
         self,
         source: Path,
-        title: str = "Apertura database",
+        title: str = "Opening database",
         message: str | None = None,
     ) -> None:
         dialog = tk.Toplevel(self.root)
@@ -584,10 +593,10 @@ class FMP12Viewer:
 
         ttk.Label(
             body,
-            text=message or f"Estrazione di {source.name}",
+            text=message or f"Extracting {source.name}",
             font=("", 10, "bold"),
         ).grid(row=0, column=0, sticky="w")
-        self.progress_text = tk.StringVar(value="Avvio lettura…")
+        self.progress_text = tk.StringVar(value="Starting read…")
         ttk.Label(
             body, textvariable=self.progress_text, wraplength=460, anchor="w"
         ).grid(row=1, column=0, sticky="ew", pady=(12, 8))
@@ -596,7 +605,7 @@ class FMP12Viewer:
         )
         self.progress_bar.grid(row=2, column=0, sticky="ew", pady=(0, 14))
         self.cancel_button = ttk.Button(
-            body, text="Annulla", command=self._request_cancel
+            body, text="Cancel", command=self._request_cancel
         )
         self.cancel_button.grid(row=3, column=0, sticky="e")
 
@@ -609,11 +618,11 @@ class FMP12Viewer:
         self.progress_window = dialog
 
     def _request_cancel(self) -> None:
-        LOGGER.info("Richiesta annullamento operazione.")
+        LOGGER.info("Operation cancellation requested.")
         if self.cancel_event is not None:
             self.cancel_event.set()
         if self.progress_text is not None:
-            self.progress_text.set("Annullamento in corso…")
+            self.progress_text.set("Canceling…")
         if self.cancel_button is not None:
             self.cancel_button.configure(state="disabled")
 
@@ -626,12 +635,12 @@ class FMP12Viewer:
     ) -> None:
         try:
             if cache_is_fresh(source, cache):
-                LOGGER.info("Cache valida nel thread di estrazione: %s", cache)
+                LOGGER.info("Cache is current in extraction worker: %s", cache)
                 self.events.put(("done", cache, source, True))
                 return
 
             if legacy_cache_is_fresh(source, legacy_cache):
-                LOGGER.info("Conversione della vecchia cache locale in JSON: %s", legacy_cache)
+                LOGGER.info("Converting existing local cache to JSON: %s", legacy_cache)
                 last_log = {"phase": "", "percent": -10}
 
                 def conversion_progress(phase: str, done: int, total: int) -> None:
@@ -653,11 +662,11 @@ class FMP12Viewer:
                     progress=conversion_progress,
                     cancel=cancel,
                 )
-                LOGGER.info("Cache JSON creata dalla cache locale esistente: %s", result)
+                LOGGER.info("Created JSON cache from existing local cache: %s", result)
                 self.events.put(("done", result, source, False))
                 return
 
-            LOGGER.info("Inizio estrazione: %s", source)
+            LOGGER.info("Starting extraction: %s", source)
             last_log = {"phase": "", "percent": -10}
 
             def progress(phase: str, done: int, total: int) -> None:
@@ -675,14 +684,14 @@ class FMP12Viewer:
             result, _tables = export_to_json_cache(
                 source, cache, progress=progress, cancel=cancel
             )
-            LOGGER.info("Estrazione completata: %s", result)
+            LOGGER.info("Extraction complete: %s", result)
             self.events.put(("done", result, source, False))
         except FMPError as exc:
-            LOGGER.exception("Errore del lettore FMP12.")
+            LOGGER.exception("FileMaker reader error.")
             self.events.put(("error", str(exc)))
         except Exception as exc:  # keep unexpected parser failures visible to the user
-            LOGGER.exception("Errore inatteso durante l'estrazione.")
-            self.events.put(("error", f"Errore inatteso: {exc}"))
+            LOGGER.exception("Unexpected error during extraction.")
+            self.events.put(("error", f"Unexpected error: {exc}"))
 
     def _sort_worker(
         self,
@@ -693,7 +702,7 @@ class FMP12Viewer:
     ) -> None:
         try:
             LOGGER.info(
-                "Creazione indice di ordinamento: tabella %s, colonna %s.",
+                "Building sort index: table %s, column %s.",
                 table.name,
                 column_index,
             )
@@ -718,14 +727,14 @@ class FMP12Viewer:
                 progress=progress,
                 cancel=cancel,
             )
-            LOGGER.info("Indice di ordinamento pronto: %s", index_path)
+            LOGGER.info("Sort index ready: %s", index_path)
             self.events.put(("sort_done", index_path))
         except FMPError as exc:
-            LOGGER.exception("Creazione dell'indice di ordinamento non riuscita.")
+            LOGGER.exception("Could not build the sort index.")
             self.events.put(("error", str(exc)))
         except Exception as exc:
-            LOGGER.exception("Errore inatteso durante l'ordinamento.")
-            self.events.put(("error", f"Errore inatteso: {exc}"))
+            LOGGER.exception("Unexpected error while sorting.")
+            self.events.put(("error", f"Unexpected error: {exc}"))
 
     def _poll_events(self) -> None:
         try:
@@ -737,8 +746,8 @@ class FMP12Viewer:
                     self._finish_progress()
                     self._show_database(event[1], event[2])
                     self.status_var.set(
-                        "Database pronto. "
-                        + ("Aperto dalla cache locale." if event[3] else "Estrazione completata.")
+                        "Database ready. "
+                        + ("Opened from local cache." if event[3] else "Extraction complete.")
                     )
                     self._restore_controls()
                     return
@@ -755,24 +764,24 @@ class FMP12Viewer:
                         self._restore_sort_controls(state)
                         self._fetch_page(state)
                         self.status_var.set(
-                            f"Ordinamento completato: {pending['label']}."
+                            f"Sorting complete: {pending['label']}."
                         )
                     self._restore_controls()
                     return
                 elif event[0] == "error":
                     is_sort_error = self.pending_sort is not None
-                    LOGGER.error("Operazione non riuscita: %s", event[1])
+                    LOGGER.error("Operation failed: %s", event[1])
                     self._finish_progress()
                     if self.pending_sort is not None:
                         self._restore_sort_controls(self.pending_sort["state"])
                         self.pending_sort = None
                     self._restore_controls()
                     message = event[1]
-                    if "annullat" in message.casefold():
-                        self.status_var.set("Operazione annullata.")
+                    if "cancel" in message.casefold():
+                        self.status_var.set("Operation canceled.")
                     else:
-                        self.status_var.set("L'operazione non è riuscita.")
-                        title = "Errore di ordinamento" if is_sort_error else "Errore di apertura"
+                        self.status_var.set("The operation failed.")
+                        title = "Sorting error" if is_sort_error else "Open error"
                         messagebox.showerror(title, message, parent=self.root)
                     return
         except queue.Empty:
@@ -784,7 +793,7 @@ class FMP12Viewer:
         if self.progress_text is not None:
             if total:
                 percent = int(done * 100 / total)
-                self.progress_text.set(f"{phase}: {done:,} di {total:,} ({percent}%)")
+                self.progress_text.set(f"{phase}: {done:,} of {total:,} ({percent}%)")
             else:
                 self.progress_text.set(f"{phase}…")
         if self.progress_bar is not None and total:
@@ -841,14 +850,14 @@ class FMP12Viewer:
             state.get("search_query") is not None
             or len(self.search_var.get().strip()) >= 3
         ):
-            self.search_status_var.set("Svuota la ricerca per ordinare la tabella")
+            self.search_status_var.set("Clear the search before sorting the table.")
             return
         if state["sort_column"] == column_index:
             descending = not state["sort_descending"]
         else:
             descending = False
         table = state["table"]
-        label = "N. record" if column_index == -1 else table.fields[column_index].name
+        label = "Record #" if column_index == -1 else table.fields[column_index].name
 
         # Record numbers already follow source order, so ascending needs no index.
         needs_index = not (column_index == -1 and not descending)
@@ -864,8 +873,8 @@ class FMP12Viewer:
             self._update_sort_headings(state)
             self._fetch_page(state)
             self.status_var.set(
-                f"Ordinamento per {label}: "
-                f"{'decrescente' if descending else 'crescente'}."
+                f"Sorted by {label}: "
+                f"{'descending' if descending else 'ascending'}."
             )
             return
 
@@ -882,14 +891,14 @@ class FMP12Viewer:
         self.cancel_event = threading.Event()
         self._show_progress_dialog(
             source,
-            title="Ordinamento tabella",
-            message=f"Preparo l'indice per «{label}» — {table.record_count:,} record",
+            title="Sorting table",
+            message=f"Building index for “{label}” — {table.record_count:,} records",
         )
         worker = threading.Thread(
             target=self._sort_worker,
             args=(self.database_path, table, column_index, self.cancel_event),
             daemon=True,
-            name="fmp12-sort-index",
+            name="filemaker-sort-index",
         )
         worker.start()
         self.root.after(100, self._poll_events)
@@ -899,7 +908,7 @@ class FMP12Viewer:
             tables = load_catalogue(database)
         except (OSError, FMPError, ValueError) as exc:
             messagebox.showerror(
-                "Cache non leggibile", str(exc), parent=self.root
+                "Unreadable cache", str(exc), parent=self.root
             )
             return
 
@@ -909,7 +918,7 @@ class FMP12Viewer:
                 try:
                     Path(result_path).unlink(missing_ok=True)
                 except OSError:
-                    LOGGER.exception("Impossibile eliminare i risultati di ricerca temporanei.")
+                    LOGGER.exception("Could not remove temporary search results.")
         for tab_id in self.notebook.tabs():
             tab_widget = self.notebook.nametowidget(tab_id)
             self.notebook.forget(tab_id)
@@ -948,11 +957,11 @@ class FMP12Viewer:
         if self.use_table_selector and self.tabs:
             self.tabs[0]["frame"].tkraise()
         self.status_var.set(
-            f"{source.name} — {len(tables)} tabelle, "
-            f"{total_records:,} record. Cache locale: {database}"
+            f"{source.name} — {len(tables)} tables, "
+            f"{total_records:,} records. Local cache: {database}"
         )
         LOGGER.info(
-            "Database visualizzato: %s; %s tabelle; %s record.",
+            "Database displayed: %s; %s tables; %s records.",
             source,
             len(tables),
             total_records,
@@ -960,7 +969,7 @@ class FMP12Viewer:
         if len(self.search_var.get().strip()) >= 3:
             state = self._current_table_state()
             if state is not None:
-                self.search_status_var.set("Ricerca in attesa…")
+                self.search_status_var.set("Search queued…")
                 self._schedule_search(state, 150)
 
     def _add_table_tab(self, table: TableInfo) -> None:
@@ -992,7 +1001,7 @@ class FMP12Viewer:
         x_scroll.grid(row=2, column=0, sticky="ew")
 
         tree["columns"] = ["record_number"] + columns
-        tree.heading("record_number", text="N. record")
+        tree.heading("record_number", text="Record #")
         tree.column("record_number", width=90, minwidth=70, stretch=False, anchor="e")
         for column_id, heading in zip(columns, headings):
             tree.heading(column_id, text=heading)
@@ -1013,7 +1022,7 @@ class FMP12Viewer:
             "search_match_count": None,
             "search_saved_sort": None,
             "heading_labels": {
-                "record_number": "N. record",
+                "record_number": "Record #",
                 **dict(zip(columns, headings)),
             },
         }
@@ -1021,7 +1030,7 @@ class FMP12Viewer:
 
         previous = ttk.Button(
             controls,
-            text="← Precedente",
+            text="← Previous",
             command=lambda s=state: self._change_page(s, -1),
         )
         previous.grid(row=0, column=0, padx=(0, 6))
@@ -1030,11 +1039,11 @@ class FMP12Viewer:
         )
         following = ttk.Button(
             controls,
-            text="Successiva →",
+            text="Next →",
             command=lambda s=state: self._change_page(s, 1),
         )
         following.grid(row=0, column=2, padx=(6, 12))
-        ttk.Label(controls, text="Record per pagina").grid(row=0, column=3, sticky="e")
+        ttk.Label(controls, text="Records per page").grid(row=0, column=3, sticky="e")
         page_size_box = ttk.Combobox(
             controls,
             textvariable=page_size,
@@ -1090,11 +1099,11 @@ class FMP12Viewer:
         visible_count = state["search_match_count"]
         if visible_count is None:
             visible_count = table.record_count
-            record_label = f"{visible_count:,} record"
+            record_label = f"{visible_count:,} records"
         else:
-            record_label = f"{visible_count:,} risultati"
+            record_label = f"{visible_count:,} matches"
         state["page_label"].set(
-            f"Pagina {page} di {total_pages} · {record_label}"
+            f"Page {page} of {total_pages} · {record_label}"
         )
         state["previous"].configure(state="normal" if page > 1 else "disabled")
         state["following"].configure(
@@ -1117,7 +1126,7 @@ class FMP12Viewer:
                 if not sort_index_is_fresh(
                     sort_index, self.database_path, table, sort_column
                 ):
-                    raise FMPError("L'indice di ordinamento non è pronto.")
+                    raise FMPError("The sort index is not ready.")
                 rows = read_sorted_json_page(
                     self.database_path,
                     table,
@@ -1127,8 +1136,8 @@ class FMP12Viewer:
                     descending=descending,
                 )
         except (OSError, ValueError, FMPError) as exc:
-            LOGGER.exception("Impossibile leggere la pagina dalla cache JSON.")
-            messagebox.showerror("Errore di lettura", str(exc), parent=self.root)
+            LOGGER.exception("Could not read a page from the JSON cache.")
+            messagebox.showerror("Read error", str(exc), parent=self.root)
             return
 
         state["page_rows"] = {}
@@ -1157,7 +1166,7 @@ class FMP12Viewer:
             return
 
         detail = tk.Toplevel(self.root)
-        detail.title(f"{table.name} — record {row_number}")
+        detail.title(f"{table.name} — Record {row_number}")
         detail.transient(self.root)
         detail.geometry("760x520")
         detail.columnconfigure(0, weight=1)
@@ -1177,7 +1186,7 @@ class FMP12Viewer:
         text.configure(state="disabled")
 
     def close(self) -> None:
-        LOGGER.info("Chiusura applicazione.")
+        LOGGER.info("Application closed.")
         if self.cancel_event is not None:
             self.cancel_event.set()
         if self.search_cancel_event is not None:
@@ -1193,12 +1202,12 @@ class FMP12Viewer:
                 try:
                     Path(result_path).unlink(missing_ok=True)
                 except OSError:
-                    LOGGER.exception("Impossibile eliminare i risultati di ricerca temporanei.")
+                    LOGGER.exception("Could not remove temporary search results.")
         self.root.destroy()
 
     def show_logs(self) -> None:
         window = tk.Toplevel(self.root)
-        window.title("Log dell'applicazione")
+        window.title("Application logs")
         window.transient(self.root)
         window.geometry("850x420")
         window.columnconfigure(0, weight=1)
@@ -1213,7 +1222,7 @@ class FMP12Viewer:
         try:
             content = LOG_PATH.read_text(encoding="utf-8")
         except OSError as exc:
-            content = f"Impossibile leggere il log: {exc}"
+            content = f"Could not read the log: {exc}"
         text.insert("1.0", content[-100_000:])
         text.configure(state="disabled")
 
@@ -1277,14 +1286,14 @@ class FMP12Viewer:
     def show_structure(self) -> None:
         if not self.tables:
             messagebox.showinfo(
-                "Struttura database",
-                "Apri prima un database FileMaker.",
+                "Database structure",
+                "Open a FileMaker database first.",
                 parent=self.root,
             )
             return
 
         window = tk.Toplevel(self.root)
-        window.title(f"Struttura — {Path(self.path_var.get()).name}")
+        window.title(f"Structure — {Path(self.path_var.get()).name}")
         window.transient(self.root)
         window.geometry("900x560")
         window.minsize(650, 380)
@@ -1292,8 +1301,8 @@ class FMP12Viewer:
         window.rowconfigure(1, weight=1)
         ttk.Label(
             window,
-            text=f"Formato: {self.source_format or 'FileMaker'} — "
-            f"{len(self.tables)} tabelle",
+            text=f"Format: {self.source_format or 'FileMaker'} — "
+            f"{len(self.tables)} tables",
             padding=(12, 10, 12, 4),
         ).grid(row=0, column=0, sticky="w")
 
@@ -1304,17 +1313,17 @@ class FMP12Viewer:
         schema_frame.rowconfigure(0, weight=1)
         schema_tree = ttk.Treeview(
             schema_frame,
-            columns=("indice", "tipo", "campi"),
+            columns=("index", "type", "field_count"),
             show="tree headings",
         )
-        schema_tree.heading("#0", text="Tabella / campo")
-        schema_tree.heading("indice", text="Indice")
-        schema_tree.heading("tipo", text="Tipo campo")
-        schema_tree.heading("campi", text="Campi")
+        schema_tree.heading("#0", text="Table / field")
+        schema_tree.heading("index", text="Index")
+        schema_tree.heading("type", text="Field type")
+        schema_tree.heading("field_count", text="Fields")
         schema_tree.column("#0", width=390, minwidth=220)
-        schema_tree.column("indice", width=90, anchor="e")
-        schema_tree.column("tipo", width=150)
-        schema_tree.column("campi", width=90, anchor="e")
+        schema_tree.column("index", width=90, anchor="e")
+        schema_tree.column("type", width=150)
+        schema_tree.column("field_count", width=90, anchor="e")
         schema_scroll = ttk.Scrollbar(
             schema_frame, orient="vertical", command=schema_tree.yview
         )
@@ -1326,7 +1335,7 @@ class FMP12Viewer:
                 "",
                 "end",
                 text=table.name,
-                values=(table.index, "Tabella", len(table.fields)),
+                values=(table.index, "Table", len(table.fields)),
                 open=True,
             )
             for field_info in table.fields:
@@ -1336,7 +1345,7 @@ class FMP12Viewer:
                     text=field_info.name,
                     values=(field_info.index, field_info.type_name, ""),
                 )
-        notebook.add(schema_frame, text="Tabelle e campi")
+        notebook.add(schema_frame, text="Tables and fields")
 
         relations_frame = ttk.Frame(notebook, padding=8)
         relations_frame.columnconfigure(0, weight=1)
@@ -1344,23 +1353,23 @@ class FMP12Viewer:
         ttk.Label(
             relations_frame,
             text=(
-                "La guida fmptools non decodifica il grafo delle relazioni di FileMaker. "
-                "Questi collegamenti sono ipotesi ricavate dai nomi dei campi e vanno "
-                "verificati nel file aperto con FileMaker."
+                "The fmptools guide does not decode FileMaker's relationship graph. "
+                "These links are guesses based on field names and should be verified "
+                "in the database opened with FileMaker."
             ),
             wraplength=820,
             justify="left",
         ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
         relations_tree = ttk.Treeview(
             relations_frame,
-            columns=("origine", "campo_origine", "destinazione", "campo_destinazione"),
+            columns=("source_table", "source_field", "related_table", "possible_key"),
             show="headings",
         )
         for column, heading in (
-            ("origine", "Tabella origine"),
-            ("campo_origine", "Campo origine"),
-            ("destinazione", "Tabella collegata"),
-            ("campo_destinazione", "Campo possibile chiave"),
+            ("source_table", "Source table"),
+            ("source_field", "Source field"),
+            ("related_table", "Related table"),
+            ("possible_key", "Possible key field"),
         ):
             relations_tree.heading(column, text=heading)
             relations_tree.column(column, width=180, minwidth=120)
@@ -1377,18 +1386,18 @@ class FMP12Viewer:
             relations_tree.insert(
                 "",
                 "end",
-                values=("Nessun collegamento deducibile dai nomi", "", "", ""),
+                values=("No links inferred from field names", "", "", ""),
             )
-        notebook.add(relations_frame, text="Collegamenti ipotizzati")
+        notebook.add(relations_frame, text="Possible links")
 
-        ttk.Button(window, text="Chiudi", command=window.destroy).grid(
+        ttk.Button(window, text="Close", command=window.destroy).grid(
             row=2, column=0, sticky="e", padx=12, pady=(0, 12)
         )
 
 
 def main() -> None:
     root = tk.Tk()
-    app = FMP12Viewer(root)
+    app = FileMakerViewer(root)
     if len(sys.argv) > 1:
         app.path_var.set(sys.argv[1])
         root.after(200, app.open_file)
